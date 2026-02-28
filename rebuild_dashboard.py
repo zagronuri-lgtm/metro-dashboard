@@ -801,9 +801,93 @@ def load_std_data(refresh=False, month=None, use_daily=False):
 
 
 # ==============================================================================
+# STEP 5b: Extract bottlenecks from STD data
+# ==============================================================================
+def extract_bottlenecks(std_data, profiles=None):
+    """Extract bottleneck segments from STD profiles.
+
+    A bottleneck is a segment between consecutive stops where STD jumps significantly.
+    We aggregate across hours to find persistent bottlenecks (not just one-off spikes).
+
+    Returns: list of bottleneck records sorted by severity
+    """
+    log("מחלץ צווארי בקבוק...")
+
+    # Collect all significant jumps (>3 min)
+    jumps = []
+    for entry in std_data:
+        if entry.get('max_jump', 0) >= 3:
+            jumps.append({
+                'line': entry['line'],
+                'route_id': entry.get('route_id', ''),
+                'desc': entry.get('desc', ''),
+                'hour': entry['hour'],
+                'from_stop': entry.get('jump_from_stop', 0),
+                'to_stop': entry.get('jump_to_stop', 0),
+                'jump_std': round(entry['max_jump'], 1),
+                'from_std': round(entry.get('jump_from_std', 0), 1),
+                'to_std': round(entry.get('jump_to_std', 0), 1),
+                'std_increase': round(entry.get('std_increase', 0), 1),
+                'n_stops': entry.get('n_stops', 0),
+            })
+
+    # Aggregate: group by line+route_id+stop_segment to find persistent bottlenecks
+    seg_map = defaultdict(lambda: {
+        'line': '', 'route_id': '', 'desc': '', 'from_stop': 0, 'to_stop': 0,
+        'hours': [], 'jumps': [], 'max_jump': 0
+    })
+
+    for j in jumps:
+        key = f"{j['line']}_{j['route_id']}_{j['from_stop']}_{j['to_stop']}"
+        seg = seg_map[key]
+        seg['line'] = j['line']
+        seg['route_id'] = j['route_id']
+        seg['desc'] = j['desc']
+        seg['from_stop'] = j['from_stop']
+        seg['to_stop'] = j['to_stop']
+        seg['hours'].append(j['hour'])
+        seg['jumps'].append(j['jump_std'])
+        if j['jump_std'] > seg['max_jump']:
+            seg['max_jump'] = j['jump_std']
+            seg['worst_hour'] = j['hour']
+            seg['from_std'] = j['from_std']
+            seg['to_std'] = j['to_std']
+
+    # Build final list
+    bottlenecks = []
+    for seg in seg_map.values():
+        n_hours = len(seg['hours'])
+        avg_jump = round(sum(seg['jumps']) / n_hours, 1)
+        # Severity = max_jump × number of affected hours
+        severity = round(seg['max_jump'] * n_hours, 0)
+
+        bottlenecks.append({
+            'line': seg['line'],
+            'route_id': seg['route_id'],
+            'desc': seg['desc'],
+            'from_stop': seg['from_stop'],
+            'to_stop': seg['to_stop'],
+            'n_hours': n_hours,
+            'hours': sorted(seg['hours']),
+            'avg_jump': avg_jump,
+            'max_jump': round(seg['max_jump'], 1),
+            'worst_hour': seg.get('worst_hour', 0),
+            'from_std': seg.get('from_std', 0),
+            'to_std': seg.get('to_std', 0),
+            'severity': severity
+        })
+
+    # Sort by severity descending
+    bottlenecks.sort(key=lambda x: -x['severity'])
+    top = bottlenecks[:200]
+    log(f"  {len(jumps)} קפיצות STD >= 3 דק -> {len(bottlenecks)} צווארי בקבוק ייחודיים -> Top {len(top)}")
+    return top
+
+
+# ==============================================================================
 # STEP 6: Build HTML dashboard
 # ==============================================================================
-def build_html(profiles, aggregates, std_data, definitions_source, data_date):
+def build_html(profiles, aggregates, std_data, bottlenecks, definitions_source, data_date):
     """Build the complete HTML dashboard."""
     log("בונה דשבורד HTML...")
 
@@ -812,6 +896,7 @@ def build_html(profiles, aggregates, std_data, definitions_source, data_date):
 
     setup_json = json.dumps(profiles, ensure_ascii=False)
     std_json = json.dumps(std_data, ensure_ascii=False)
+    bottlenecks_json = json.dumps(bottlenecks, ensure_ascii=False)
     branch_json = json.dumps(aggregates['branch_stats'], ensure_ascii=False)
     hour_json = json.dumps(aggregates['hour_stats'], ensure_ascii=False)
     kpis_json = json.dumps(aggregates['kpis'], ensure_ascii=False)
@@ -832,6 +917,7 @@ def build_html(profiles, aggregates, std_data, definitions_source, data_date):
         # Replace data placeholders
         template = template.replace('/*DATA_SETUP*/', f'const SETUP_ALL = {setup_json};')
         template = template.replace('/*DATA_STD*/', f'const STD_TOP500 = {std_json};')
+        template = template.replace('/*DATA_BOTTLENECKS*/', f'const BOTTLENECKS = {bottlenecks_json};')
         template = template.replace('/*DATA_BRANCH*/', f'const BRANCH_STATS = {branch_json};')
         template = template.replace('/*DATA_HOUR*/', f'const HOUR_STATS = {hour_json};')
         template = template.replace('/*DATA_KPIS*/', f'const KPIS = {kpis_json};')
@@ -967,8 +1053,11 @@ def main():
     refresh_std = args.refresh_api or args.refresh_std_only
     std_data = load_std_data(refresh=refresh_std, month=latest_month, use_daily=args.std_daily)
 
+    # Step 5b: Bottlenecks (צווארי בקבוק)
+    bottlenecks = extract_bottlenecks(std_data, profiles)
+
     # Step 6: Build HTML
-    output_file = build_html(profiles, aggregates, std_data, definitions_source, data_date)
+    output_file = build_html(profiles, aggregates, std_data, bottlenecks, definitions_source, data_date)
 
     if args.output:
         import shutil

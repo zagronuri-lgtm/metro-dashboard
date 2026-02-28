@@ -61,6 +61,12 @@ tr:hover td { background:#f0f7ff; }
 .badge-ok { background:#d4edda; color:#155724; }
 .badge-p { background:#f0e6f6; color:#6c3483; }
 .pax-bar { display:inline-block; height:14px; background:linear-gradient(90deg,#8e44ad,#c39bd3); border-radius:3px; min-width:2px; vertical-align:middle; }
+.badge-sev-h { background:#fde8e8; color:#c0392b; }
+.badge-sev-m { background:#fef3cd; color:#856404; }
+.badge-sev-l { background:#d4edda; color:#155724; }
+.hours-tags { display:flex; gap:3px; flex-wrap:wrap; }
+.hours-tags span { background:#eaf2fb; color:#0f3460; padding:1px 6px; border-radius:8px; font-size:0.68rem; font-weight:500; }
+.seg-arrow { color:#c0392b; font-weight:700; }
 .info-section { background:var(--bg-card); border-radius:var(--radius); padding:20px; box-shadow:0 1px 4px rgba(0,0,0,0.08); margin-bottom:var(--gap); }
 .info-section .toggle-hdr { display:flex; justify-content:space-between; align-items:center; cursor:pointer; }
 .info-section h2 { font-size:1.05rem; font-weight:700; color:var(--text-primary); }
@@ -113,6 +119,7 @@ footer { text-align:center; padding:14px; color:#999; font-size:0.73rem; }
     <button class="active" onclick="switchTab('setup',this)">פרופילי הגדרה + נוסעים</button>
     <button class="accent-tab" onclick="switchTab('priority',this)">עדיפות לתיקון (קו × כיוון)</button>
     <button onclick="switchTab('std',this)">פרופילי STD — Top 500</button>
+    <button style="background:#c0392b;color:#fff;" onclick="switchTab('bottleneck',this)">צווארי בקבוק</button>
   </div>
   <div class="tbl-wrap" id="tblWrap"></div>
 </section>
@@ -213,6 +220,7 @@ footer { text-align:center; padding:14px; color:#999; font-size:0.73rem; }
 /*DATA_HOUR*/
 /*DATA_SETUP*/
 /*DATA_STD*/
+/*DATA_BOTTLENECKS*/
 /*DATA_KPIS*/
 /*DATA_PRIORITY*/
 
@@ -339,6 +347,7 @@ function switchTab(tab, btn) {
   curTab=tab;
   if(tab==='setup') { sortCol='priority'; sortDir=-1; }
   else if(tab==='priority') { sortCol='priority'; sortDir=-1; }
+  else if(tab==='bottleneck') { sortCol='severity'; sortDir=-1; }
   else { sortCol='std_increase'; sortDir=-1; }
   document.querySelectorAll('.tab-bar button').forEach(b=>b.classList.remove('active'));
   btn.classList.add('active');
@@ -348,6 +357,7 @@ function switchTab(tab, btn) {
 function renderTable() {
   if(curTab==='setup') renderSetup();
   else if(curTab==='priority') renderPriorityTable();
+  else if(curTab==='bottleneck') renderBottlenecks();
   else renderSTD();
 }
 
@@ -409,6 +419,35 @@ function renderSTD() {
   h+='</tr></thead><tbody>';
   rows.slice(0,500).forEach(r=>{
     h+=`<tr><td><b>${r.line}</b></td><td style="font-size:0.73rem">${r.desc||r.route_desc_code||'-'}</td><td>${r.month}</td><td>${r.hour}:00</td><td>${r.n_stops}</td><td class="gap-pos">${r.std_increase?.toFixed(1)}</td><td>${r.max_jump?.toFixed(1)}</td><td>${r.slope?.toFixed(2)}</td><td>${r.travel_min?.toFixed(0)??'-'}</td></tr>`;
+  });
+  h+='</tbody></table>';
+  document.getElementById('tblWrap').innerHTML=h;
+}
+
+function renderBottlenecks() {
+  const s=document.getElementById('fLine').value.trim();
+  if(typeof BOTTLENECKS==='undefined'||!BOTTLENECKS.length){document.getElementById('tblWrap').innerHTML='<p style="padding:20px;color:#888;text-align:center;">אין נתוני צווארי בקבוק — יש לרענן עם נתוני STD</p>';document.getElementById('tblCount').textContent='';return;}
+  let rows=BOTTLENECKS.filter(r=>!s||String(r.line).includes(s)).sort((a,b)=>sortDir*((a[sortCol]??0)-(b[sortCol]??0)));
+  document.getElementById('tblCount').textContent=rows.length+' צווארי בקבוק';
+  const cols=[['line','קו'],['desc','תיאור'],['segment','קטע'],['n_hours','שעות פעילות'],['hours','שעות'],['avg_jump','קפיצה ממוצ׳'],['max_jump','קפיצה מקס׳'],['worst_hour','שעה גרועה'],['severity','חומרה']];
+  let h='<table><thead><tr>';
+  cols.forEach(([k,l])=>{const sk=k==='segment'?'from_stop':k==='hours'?'n_hours':k;const a=sortCol===sk?(sortDir>0?' ▲':' ▼'):'';h+=`<th onclick="doSort('${sk}')">${l}${a}</th>`;});
+  h+='</tr></thead><tbody>';
+  rows.slice(0,200).forEach(r=>{
+    const sevBadge=r.severity>=100?'badge-sev-h':r.severity>=40?'badge-sev-m':'badge-sev-l';
+    const sevLabel=r.severity>=100?'קריטי':r.severity>=40?'בינוני':'נמוך';
+    const hrTags=r.hours?r.hours.map(h2=>'<span>'+h2+':00</span>').join(''):'';
+    h+=`<tr>`;
+    h+=`<td><b>${r.line}</b></td>`;
+    h+=`<td style="font-size:0.73rem">${r.desc||'-'}</td>`;
+    h+=`<td>תחנה ${r.from_stop} <span class="seg-arrow">→</span> ${r.to_stop}</td>`;
+    h+=`<td>${r.n_hours}</td>`;
+    h+=`<td><div class="hours-tags">${hrTags}</div></td>`;
+    h+=`<td class="gap-pos">${r.avg_jump?.toFixed(1)}</td>`;
+    h+=`<td class="gap-pos">${r.max_jump?.toFixed(1)}</td>`;
+    h+=`<td>${r.worst_hour}:00</td>`;
+    h+=`<td><span class="badge ${sevBadge}">${sevLabel} (${Math.round(r.severity)})</span></td>`;
+    h+=`</tr>`;
   });
   h+='</tbody></table>';
   document.getElementById('tblWrap').innerHTML=h;
