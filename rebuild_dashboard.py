@@ -227,7 +227,7 @@ def process_definitions(csv_paths, filter_holidays=True):
     duration_col = next((c for c in cols if c == 'Duration' or c == 'duration'), None)
     q85_col = next((c for c in cols if '85' in c), None)
     q90_col = next((c for c in cols if '90' in c), None)
-    cluster_col = next((c for c in cols if 'Cluster' in c or 'cluster' in c), None)
+    cluster_col = next((c for c in cols if c == 'ClusterName'), None) or next((c for c in cols if 'Cluster' in c or 'cluster' in c), None)
 
     # Q85 might be missing in older files — we'll compute from raw durations
     compute_percentiles = q85_col is None
