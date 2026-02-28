@@ -1,0 +1,420 @@
+<!DOCTYPE html>
+<html lang="he" dir="rtl">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>מטרופולין — כלי ניתוח דיוק הגדרות מול ביצוע + נפח נוסעים</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.5.1" integrity="sha384-jb8JQMbMoBUzgWatfe6COACi2ljcDdZQ2OxczGA3bGNeWe+6DChMTBJemed7ZnvJ" crossorigin="anonymous"></script>
+<style>
+:root {
+  --bg-primary: #f0f2f5;
+  --bg-card: #ffffff;
+  --bg-header: linear-gradient(135deg, #1a1a2e 0%, #16213e 50%, #0f3460 100%);
+  --text-primary: #1a1a2e;
+  --text-secondary: #6c757d;
+  --text-on-dark: #ffffff;
+  --positive: #27ae60;
+  --negative: #e74c3c;
+  --warning: #f39c12;
+  --accent: #8e44ad;
+  --gap: 14px;
+  --radius: 10px;
+}
+* { margin:0; padding:0; box-sizing:border-box; }
+body { font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif; background:var(--bg-primary); color:var(--text-primary); direction:rtl; line-height:1.5; }
+.dashboard { max-width:1400px; margin:0 auto; padding:16px; }
+header { background:var(--bg-header); color:var(--text-on-dark); padding:20px 28px; border-radius:var(--radius); margin-bottom:var(--gap); display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:12px; }
+header h1 { font-size:1.4rem; font-weight:700; }
+header .subtitle { font-size:0.82rem; opacity:0.8; margin-top:4px; }
+.filters { display:flex; gap:10px; flex-wrap:wrap; align-items:center; }
+.filters select, .filters input { padding:6px 12px; border-radius:6px; border:1px solid rgba(255,255,255,0.3); background:rgba(255,255,255,0.1); color:#fff; font-size:0.82rem; cursor:pointer; }
+.filters select option { background:#1a1a2e; color:#fff; }
+.filters input::placeholder { color:rgba(255,255,255,0.5); }
+.kpis { display:grid; grid-template-columns:repeat(auto-fit,minmax(155px,1fr)); gap:var(--gap); margin-bottom:var(--gap); }
+.kpi { background:var(--bg-card); border-radius:var(--radius); padding:14px 16px; box-shadow:0 1px 4px rgba(0,0,0,0.08); text-align:center; }
+.kpi .val { font-size:1.6rem; font-weight:700; color:#0f3460; }
+.kpi .lbl { font-size:0.73rem; color:var(--text-secondary); margin-top:3px; }
+.kpi.warn .val { color:var(--negative); }
+.kpi.good .val { color:var(--positive); }
+.kpi.accent .val { color:var(--accent); }
+.charts { display:grid; grid-template-columns:1fr 1fr; gap:var(--gap); margin-bottom:var(--gap); }
+.chart-card { background:var(--bg-card); border-radius:var(--radius); padding:16px; box-shadow:0 1px 4px rgba(0,0,0,0.08); }
+.chart-card h3 { font-size:0.92rem; margin-bottom:10px; color:var(--text-primary); font-weight:600; }
+.chart-card canvas { max-height:280px; }
+.detail { background:var(--bg-card); border-radius:var(--radius); padding:16px; box-shadow:0 1px 4px rgba(0,0,0,0.08); margin-bottom:var(--gap); }
+.detail h3 { font-size:0.95rem; margin-bottom:10px; font-weight:600; }
+.tab-bar { display:flex; gap:4px; margin-bottom:10px; border-bottom:2px solid #eee; flex-wrap:wrap; }
+.tab-bar button { padding:7px 16px; border:none; background:none; cursor:pointer; font-size:0.82rem; color:#888; border-bottom:2px solid transparent; margin-bottom:-2px; font-weight:500; }
+.tab-bar button.active { color:#0f3460; border-bottom-color:#0f3460; font-weight:600; }
+.tab-bar button.accent-tab.active { color:var(--accent); border-bottom-color:var(--accent); }
+.tbl-wrap { max-height:520px; overflow-y:auto; border:1px solid #eee; border-radius:6px; }
+table { width:100%; border-collapse:collapse; font-size:0.78rem; }
+th { background:#f8f9fa; padding:8px 6px; text-align:right; font-weight:600; cursor:pointer; white-space:nowrap; border-bottom:2px solid #ddd; position:sticky; top:0; user-select:none; z-index:1; }
+th:hover { background:#e9ecef; }
+td { padding:7px 6px; border-bottom:1px solid #eee; }
+tr:hover td { background:#f0f7ff; }
+.gap-pos { color:var(--negative); font-weight:600; }
+.gap-neg { color:var(--positive); }
+.badge { display:inline-block; padding:2px 8px; border-radius:10px; font-size:0.7rem; font-weight:600; }
+.badge-d { background:#fde8e8; color:#c0392b; }
+.badge-w { background:#fef3cd; color:#856404; }
+.badge-ok { background:#d4edda; color:#155724; }
+.badge-p { background:#f0e6f6; color:#6c3483; }
+.pax-bar { display:inline-block; height:14px; background:linear-gradient(90deg,#8e44ad,#c39bd3); border-radius:3px; min-width:2px; vertical-align:middle; }
+.info-section { background:var(--bg-card); border-radius:var(--radius); padding:20px; box-shadow:0 1px 4px rgba(0,0,0,0.08); margin-bottom:var(--gap); }
+.info-section .toggle-hdr { display:flex; justify-content:space-between; align-items:center; cursor:pointer; }
+.info-section h2 { font-size:1.05rem; font-weight:700; color:var(--text-primary); }
+.info-block { background:#f8f9fa; border-radius:8px; padding:16px; margin-bottom:12px; border-right:4px solid #0f3460; }
+.info-block h4 { margin-bottom:8px; font-size:0.92rem; }
+.info-block p, .info-block div { font-size:0.83rem; line-height:1.75; color:#333; }
+.info-block a { color:#2980b9; text-decoration:none; }
+.info-block a:hover { text-decoration:underline; }
+.info-block code { background:#e8e8e8; padding:2px 6px; border-radius:3px; font-size:0.76rem; direction:ltr; display:inline-block; }
+footer { text-align:center; padding:14px; color:#999; font-size:0.73rem; }
+@media (max-width:900px) { .charts { grid-template-columns:1fr; } .kpis { grid-template-columns:repeat(2,1fr); } }
+</style>
+</head>
+<body>
+<div class="dashboard">
+
+<header>
+  <div>
+    <h1>מטרופולין — ניתוח דיוק הגדרות מול ביצוע + נפח נוסעים</h1>
+    <div class="subtitle">שילוב: STD (2024) + הגדרות Optibus ({{DEFINITIONS_SOURCE}}) + נפח נוסעים לנסיעה (ridership_clean) | עדכון: {{BUILD_DATE}}</div>
+  </div>
+  <div class="filters">
+    <select id="fBranch"><option value="all">כל הסניפים</option></select>
+    <select id="fHour"><option value="all">כל השעות</option></select>
+    <input type="text" id="fLine" placeholder="חפש קו..." style="width:130px;direction:rtl;">
+    <select id="fGap">
+      <option value="all">כל הפערים</option>
+      <option value="over5">פער > 5 דק׳</option>
+      <option value="over10">פער > 10 דק׳</option>
+      <option value="neg">הגדרה עודפת</option>
+    </select>
+  </div>
+</header>
+
+<section class="kpis" id="kpiRow"></section>
+
+<section class="charts">
+  <div class="chart-card"><h3>פער ממוצע (Q85 מול הגדרה) לפי סניף</h3><canvas id="cBranch"></canvas></div>
+  <div class="chart-card"><h3>התפלגות פערים</h3><canvas id="cDist"></canvas></div>
+  <div class="chart-card"><h3>פער ממוצע לפי שעה ביום</h3><canvas id="cHour"></canvas></div>
+  <div class="chart-card"><h3>Top 20 — עדיפות לתיקון (פער × נוסעים יומיים)</h3><canvas id="cPriority"></canvas></div>
+</section>
+
+<section class="detail">
+  <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
+    <h3>טבלת פרופילים מפורטת</h3>
+    <span id="tblCount" style="font-size:0.78rem;color:#888;"></span>
+  </div>
+  <div class="tab-bar">
+    <button class="active" onclick="switchTab('setup',this)">פרופילי הגדרה + נוסעים</button>
+    <button class="accent-tab" onclick="switchTab('priority',this)">עדיפות לתיקון (קו × כיוון)</button>
+    <button onclick="switchTab('std',this)">פרופילי STD — Top 500</button>
+  </div>
+  <div class="tbl-wrap" id="tblWrap"></div>
+</section>
+
+<!-- METHODOLOGY SECTION -->
+<section class="info-section">
+  <div class="toggle-hdr" onclick="document.getElementById('infoBody').style.display=document.getElementById('infoBody').style.display==='none'?'block':'none'; document.getElementById('infoArrow').textContent=document.getElementById('infoBody').style.display==='none'?'◀':'▼';">
+    <h2>הסבר כללי, מתודולוגיה ומקורות נתונים</h2>
+    <span id="infoArrow" style="font-size:1.2rem;">▼</span>
+  </div>
+  <div id="infoBody" style="margin-top:16px;">
+
+    <div class="info-block" style="border-right-color:#0f3460;">
+      <h4 style="color:#0f3460;">מטרת הכלי</h4>
+      <p>כלי זה נועד לשפר את דיוק הגדרות זמני הנסיעה של מטרופולין, על ידי זיהוי שיטתי של קווים, כיוונים ושעות שבהם <strong>זמן ההגדרה המתוכנן קצר מדי ביחס לביצוע בפועל</strong>. הגדרה לא ריאלית גורמת באופן ישיר לאי-ביצוע, לאיחורים מצטברים, לפגיעה ברמת השירות ולקנסות מצד משרד התחבורה.<br><br><strong style="color:#8e44ad;">שכבת נפח נוסעים:</strong> שילוב נתוני נוסעים לנסיעה מאפשר לתעדף תיקונים לפי <strong>השפעה אמיתית</strong>. מדד "דקות-נוסע אבודות" (Impact/Ride) = פער בדקות × נוסעים ממוצעים בנסיעה. לדוגמה: קו 126 כיוון 2 בשעה 14 — פער 22.9 דק' × 40.8 נוסעים = 934 דקות-נוסע אבודות <strong>בכל נסיעה</strong>.</p>
+    </div>
+
+    <div class="info-block" style="border-right-color:#27ae60;">
+      <h4 style="color:#27ae60;">מקורות נתונים</h4>
+      <div>
+        <div style="margin-bottom:12px;">
+          <strong style="color:#0f3460;">1. נתוני STD — סטיית תקן זמני הגעה (2024)</strong><br>
+          מקור: <a href="https://data.gov.il/dataset/bus_stops_std" target="_blank">data.gov.il — פורטל הנתונים הממשלתי</a><br>
+          API: <code>resource_id=ad60edd5-33f8-47e9-9407-f70be4a7dcdd</code><br>
+          היקף: ~23.7 מיליון רשומות, כל שנת 2024<br>
+          סינון: 812 מסלולי מטרופולין (agency_id=15) באמצעות GTFS
+        </div>
+        <div style="margin-bottom:12px;">
+          <strong style="color:#0f3460;">2. זמני הגדרה ואחוזונים — Optibus ({{DEFINITIONS_SOURCE}})</strong><br>
+          מקור: מערכת Optibus — ייצוא נתוני setup times<br>
+          סניפים: שרון-חולון מרחבי, בקעת אונו-אלעד, שרון עירוני, הנגב
+        </div>
+        <div style="margin-bottom:12px;">
+          <strong style="color:#8e44ad;">3. נפח נוסעים — ridership_clean</strong><br>
+          מקור: קובץ ridership_clean.csv — נתוני תיקופי רב-קו מעובדים<br>
+          היקף: 1,889 רשומות, 501 צירופי קו × כיוון, 3 רבעונים (Q1/Q2/Q4)<br>
+          שדות מרכזיים: נוסעים יומיים, נוסעים שבועיים, <strong>ממוצע נוסעים לנסיעה</strong><br>
+          הצלבה: נלקח הרבעון העדכני ביותר (Q4 כשזמין). 99.3% התאמה<br>
+          הערה: חלק מהקווים מופיעים בכמה אשכולות — במקרים אלה נסכמו הנוסעים
+        </div>
+        <div>
+          <strong style="color:#2980b9;">4. תיקוף — תיקופי מסלקה (data.gov.il)</strong><br>
+          מקור: <a href="https://data.gov.il" target="_blank">data.gov.il</a> — <code>resource_id=e72b10f3-4458-42c1-ba34-9b232feb8bc7</code><br>
+          תיקוף: מתאם פירסון r=0.987 על 453 צירופי קו × כיוון בין ridership_clean לתיקופי מסלקה<br>
+          הפרש שיטתי: ridership_clean גבוה ב-~26% (כולל נוסעים ללא רב-קו)
+        </div>
+      </div>
+    </div>
+
+    <div class="info-block" style="border-right-color:#e74c3c;">
+      <h4 style="color:#e74c3c;">מתודולוגיה</h4>
+      <div>
+        <div style="margin-bottom:8px;"><strong>שלב 1 — חילוץ מסלולי מטרופולין מ-GTFS:</strong> מזהי המסלולים חולצו מפיד GTFS הארצי (agency_id=15). זוהו 812 מסלולים.</div>
+        <div style="margin-bottom:8px;"><strong>שלב 2 — ניתוח STD מצטבר:</strong> לכל מסלול נשלפו נתוני סטיית תקן. קובצו לפרופילים לפי חודש ושעה.</div>
+        <div style="margin-bottom:8px;"><strong>שלב 3 — עיבוד זמני הגדרה מ-Optibus:</strong> קיבוץ לפרופילים ייחודיים, חישוב ממוצעים ואחוזונים Q75–Q95.</div>
+        <div style="margin-bottom:8px;"><strong>שלב 4 — ניתוח פערים:</strong> <strong style="color:#e74c3c;">Gap = Q85 − הגדרה מתוכננת</strong> (בדקות). פער חיובי = הגדרה קצרה מדי.</div>
+        <div style="margin-bottom:8px;"><strong style="color:#8e44ad;">שלב 5 — הצלבת נוסעים:</strong> לכל פרופיל שויך נפח נוסעים יומי + ממוצע לנסיעה. 99.3% התאמה.</div>
+        <div style="margin-bottom:8px;"><strong style="color:#8e44ad;">שלב 6 — מדדי עדיפות:</strong><br>
+          <code>Priority = פער ממוצע × נוסעים יומיים</code> — תעדוף ברמת קו<br>
+          <code>Impact/Ride = פער × נוסעים לנסיעה</code> — דקות-נוסע אבודות בכל נסיעה בודדת
+        </div>
+        <div><strong>סיווג חומרה:</strong>
+          <span class="badge badge-ok">תקין</span> פער ≤ 0 דק' &nbsp;
+          <span class="badge badge-w">בעייתי</span> פער 5–10 דק' &nbsp;
+          <span class="badge badge-d">קריטי</span> פער > 10 דק'
+        </div>
+      </div>
+    </div>
+
+    <div class="info-block" style="border-right-color:#f39c12;">
+      <h4 style="color:#f39c12;">מגבלות ונקודות לתשומת לב</h4>
+      <div>
+        <div style="margin-bottom:5px;"><strong>פער תקופות:</strong> נתוני STD מ-2024, הגדרות מנובמבר 2025. שינויים במסלולים עלולים להשפיע.</div>
+        <div style="margin-bottom:5px;"><strong>קווים מעגליים:</strong> קו 2 וכדומה — API מודד לולאה מלאה, הגדרה מכסה מחצית.</div>
+        <div style="margin-bottom:5px;"><strong>נוסעים לנסיעה:</strong> ממוצע שבועי, לא משתנה לפי שעה. בפועל שעות שיא צפויות עם יותר נוסעים.</div>
+        <div><strong>כיסוי רב-קו:</strong> נתוני רב-קו אינם מכסים 100% מהנוסעים (כרטיסים חד-פעמיים חסרים).</div>
+      </div>
+    </div>
+
+    <div class="info-block" style="border-right-color:#8e44ad;">
+      <h4 style="color:#8e44ad;">הנחיות שימוש</h4>
+      <div>
+        <div style="margin-bottom:5px;"><strong>סינון:</strong> פילטרים בראש הדף. כל הגרפים והטבלה מתעדכנים בזמן אמת.</div>
+        <div style="margin-bottom:5px;"><strong>טאב "עדיפות לתיקון":</strong> מציג קווים מדורגים לפי (פער × נוסעים). כולל עמודת "השפעה/נסיעה" — דקות-נוסע אבודות.</div>
+        <div style="margin-bottom:5px;"><strong>טאב "פרופילי הגדרה":</strong> כל הפרופילים עם נוסעים/יום ונוסעים/נסיעה.</div>
+        <div><strong>המלצה:</strong> התחילו מטאב "עדיפות" → זהו קווים מובילים → צללו לשעות ספציפיות.</div>
+      </div>
+    </div>
+
+  </div>
+</section>
+
+<footer>מטרופולין — ניתוח הגדרות + נפח נוסעים | STD: data.gov.il (2024) | הגדרות: Optibus ({{DEFINITIONS_SOURCE}}) | נוסעים: ridership_clean | נבנה: {{BUILD_DATE}}</footer>
+
+</div>
+<script>
+/*DATA_BRANCH*/
+/*DATA_HOUR*/
+/*DATA_SETUP*/
+/*DATA_STD*/
+/*DATA_KPIS*/
+/*DATA_PRIORITY*/
+
+let curTab = 'setup', sortCol = 'priority', sortDir = -1;
+const charts = {};
+const COLORS = ['#0f3460','#e74c3c','#f39c12','#27ae60','#8e44ad','#2980b9','#d35400','#16a085'];
+const MAX_PAX = Math.max(...SETUP_ALL.map(r=>r.daily_pax||0));
+
+document.addEventListener('DOMContentLoaded', () => {
+  initFilters();
+  refresh();
+  ['fBranch','fHour','fGap'].forEach(id => document.getElementById(id).addEventListener('change', refresh));
+  document.getElementById('fLine').addEventListener('input', refresh);
+});
+
+function initFilters() {
+  const bs = document.getElementById('fBranch');
+  [...new Set(SETUP_ALL.map(r=>r.branch))].sort().forEach(b => {
+    const o = document.createElement('option'); o.value=b; o.textContent=b; bs.appendChild(o);
+  });
+  const hs = document.getElementById('fHour');
+  [...new Set(SETUP_ALL.map(r=>r.hour))].sort((a,b)=>a-b).forEach(h => {
+    const o = document.createElement('option'); o.value=h; o.textContent=h+':00'; hs.appendChild(o);
+  });
+}
+
+function getFiltered() {
+  const b=document.getElementById('fBranch').value, h=document.getElementById('fHour').value,
+        s=document.getElementById('fLine').value.trim(), g=document.getElementById('fGap').value;
+  return SETUP_ALL.filter(r => {
+    if(b!=='all' && r.branch!==b) return false;
+    if(h!=='all' && r.hour!==parseFloat(h)) return false;
+    if(s && !String(r.line).includes(s)) return false;
+    if(g==='over5' && r.gap_q85<=5) return false;
+    if(g==='over10' && r.gap_q85<=10) return false;
+    if(g==='neg' && r.gap_q85>=0) return false;
+    return true;
+  });
+}
+
+function refresh() { renderKPIs(); renderCharts(); renderTable(); }
+
+function renderKPIs() {
+  const f = getFiltered(), n = f.length;
+  const overQ85 = f.filter(r=>r.gap_q85>0).length;
+  const over5 = f.filter(r=>r.gap_q85>5).length;
+  const avgGap = n>0 ? (f.reduce((s,r)=>s+r.gap_q85,0)/n) : 0;
+  const lines = new Set(f.map(r=>r.line)).size;
+  const pO = n>0?(overQ85/n*100):0, p5=n>0?(over5/n*100):0;
+  const seen = new Set();
+  let totalPax = 0;
+  f.forEach(r => { const k=r.line+'_'+r.dir; if(!seen.has(k)){seen.add(k);totalPax+=r.daily_pax||0;} });
+  document.getElementById('kpiRow').innerHTML = `
+    <div class="kpi"><div class="val">${n.toLocaleString()}</div><div class="lbl">פרופילים מסוננים</div></div>
+    <div class="kpi"><div class="val">${lines}</div><div class="lbl">קווים ייחודיים</div></div>
+    <div class="kpi ${pO>50?'warn':'good'}"><div class="val">${pO.toFixed(1)}%</div><div class="lbl">Q85 > הגדרה</div></div>
+    <div class="kpi ${p5>25?'warn':'good'}"><div class="val">${p5.toFixed(1)}%</div><div class="lbl">פער > 5 דק׳</div></div>
+    <div class="kpi ${avgGap>3?'warn':'good'}"><div class="val">${avgGap.toFixed(1)}</div><div class="lbl">פער ממוצע (דק׳)</div></div>
+    <div class="kpi accent"><div class="val">${Math.round(totalPax).toLocaleString()}</div><div class="lbl">נוסעים/יום (קווים מסוננים)</div></div>
+    <div class="kpi"><div class="val">${Number(KPIS.total_std||0).toLocaleString()}</div><div class="lbl">פרופילי STD (2024)</div></div>`;
+}
+
+function renderCharts() { renderBranch(); renderDist(); renderHour(); renderPriority(); }
+
+function renderBranch() {
+  if(charts.branch) charts.branch.destroy();
+  const f=getFiltered(), m={};
+  f.forEach(r=>{if(!m[r.branch])m[r.branch]={s:0,c:0};m[r.branch].s+=r.gap_q85;m[r.branch].c++;});
+  const labels=Object.keys(m).sort((a,b)=>m[b].s/m[b].c-m[a].s/m[a].c);
+  charts.branch=new Chart(document.getElementById('cBranch'),{type:'bar',data:{labels,datasets:[{data:labels.map(b=>(m[b].s/m[b].c).toFixed(1)),backgroundColor:labels.map((_,i)=>COLORS[i%8]),borderRadius:4}]},options:{responsive:true,plugins:{legend:{display:false}},scales:{y:{title:{display:true,text:'דקות'},grid:{color:'#f0f0f0'}},x:{grid:{display:false}}}}});
+}
+
+function renderDist() {
+  if(charts.dist) charts.dist.destroy();
+  const f=getFiltered(), bins=['<-10','-10..-5','-5..0','0..2','2..5','5..10','10..20','>20'], cnt=Array(8).fill(0);
+  f.forEach(r=>{const g=r.gap_q85;if(g<-10)cnt[0]++;else if(g<-5)cnt[1]++;else if(g<0)cnt[2]++;else if(g<2)cnt[3]++;else if(g<5)cnt[4]++;else if(g<10)cnt[5]++;else if(g<20)cnt[6]++;else cnt[7]++;});
+  charts.dist=new Chart(document.getElementById('cDist'),{type:'bar',data:{labels:bins,datasets:[{data:cnt,backgroundColor:['#27ae60','#2ecc71','#82e0aa','#f9e79f','#f5b041','#e74c3c','#c0392b','#922b21'],borderRadius:3}]},options:{responsive:true,plugins:{legend:{display:false}},scales:{y:{title:{display:true,text:'פרופילים'},grid:{color:'#f0f0f0'}},x:{title:{display:true,text:'פער Q85 (דק׳)'},grid:{display:false}}}}});
+}
+
+function renderHour() {
+  if(charts.hour) charts.hour.destroy();
+  const f=getFiltered(), m={};
+  f.forEach(r=>{if(!m[r.hour])m[r.hour]={s:0,c:0};m[r.hour].s+=r.gap_q85;m[r.hour].c++;});
+  const hrs=Object.keys(m).map(Number).sort((a,b)=>a-b);
+  charts.hour=new Chart(document.getElementById('cHour'),{type:'line',data:{labels:hrs.map(h=>h+':00'),datasets:[{data:hrs.map(h=>(m[h].s/m[h].c).toFixed(1)),borderColor:'#0f3460',backgroundColor:'rgba(15,52,96,0.1)',fill:true,tension:0.3,pointRadius:4,pointBackgroundColor:'#0f3460'}]},options:{responsive:true,plugins:{legend:{display:false}},scales:{y:{title:{display:true,text:'דקות'},grid:{color:'#f0f0f0'}},x:{grid:{display:false}}}}});
+}
+
+function renderPriority() {
+  if(charts.priority) charts.priority.destroy();
+  const f = getFiltered();
+  const lineMap = {};
+  f.forEach(r => {
+    const k = r.line+'_'+r.dir;
+    if(!lineMap[k]) lineMap[k] = {l:r.line,d:r.dir,gap:0,cnt:0,pax:r.daily_pax||0,ppr:r.pax_per_ride||0,b:r.branch};
+    if(r.gap_q85>0){lineMap[k].gap+=r.gap_q85;lineMap[k].cnt++;}
+  });
+  const sorted = Object.values(lineMap)
+    .map(v=>({...v, avg:v.cnt>0?v.gap/v.cnt:0, score:v.cnt>0?(v.gap/v.cnt)*v.pax:0}))
+    .filter(x=>x.score>0)
+    .sort((a,b)=>b.score-a.score)
+    .slice(0,20);
+
+  charts.priority=new Chart(document.getElementById('cPriority'),{
+    type:'bar',
+    data:{
+      labels:sorted.map(x=>'קו '+x.l+' כ'+x.d),
+      datasets:[{
+        data:sorted.map(x=>Math.round(x.score)),
+        backgroundColor:sorted.map((_,i)=>`rgba(142,68,173,${0.3+(1-i/20)*0.7})`),
+        borderRadius:3
+      }]
+    },
+    options:{
+      responsive:true, indexAxis:'y',
+      plugins:{legend:{display:false},tooltip:{callbacks:{
+        afterLabel:ctx=>{const d=sorted[ctx.dataIndex];return `פער: ${d.avg.toFixed(1)} דק' | ${Math.round(d.pax).toLocaleString()} נוסעים/יום | ${d.ppr.toFixed(0)} נוסעים/נסיעה | ${d.b}`;}
+      }}},
+      scales:{x:{title:{display:true,text:'ציון עדיפות (פער × נוסעים/יום)'},grid:{color:'#f0f0f0'}},y:{grid:{display:false}}}
+    }
+  });
+}
+
+function switchTab(tab, btn) {
+  curTab=tab;
+  if(tab==='setup') { sortCol='priority'; sortDir=-1; }
+  else if(tab==='priority') { sortCol='priority'; sortDir=-1; }
+  else { sortCol='std_increase'; sortDir=-1; }
+  document.querySelectorAll('.tab-bar button').forEach(b=>b.classList.remove('active'));
+  btn.classList.add('active');
+  renderTable();
+}
+
+function renderTable() {
+  if(curTab==='setup') renderSetup();
+  else if(curTab==='priority') renderPriorityTable();
+  else renderSTD();
+}
+
+function paxBar(val) {
+  if(!val || MAX_PAX===0) return '-';
+  const w = Math.max(2, Math.round(val/MAX_PAX*80));
+  return `<span class="pax-bar" style="width:${w}px;" title="${val.toLocaleString()} נוסעים/יום"></span> ${Math.round(val).toLocaleString()}`;
+}
+
+function renderSetup() {
+  let rows=getFiltered().sort((a,b)=>sortDir*((a[sortCol]??0)-(b[sortCol]??0)));
+  document.getElementById('tblCount').textContent=rows.length+' שורות';
+  const cols=[['line','קו'],['dir','כיוון'],['hour','שעה'],['branch','סניף'],['planned','הגדרה'],['q85','Q85'],['gap_q85','פער'],['pax_per_ride','נוסע/נסיעה'],['daily_pax','נוסע/יום'],['priority','עדיפות'],['n_trips','נסיעות'],['pct_over','% חריגה']];
+  let h='<table><thead><tr>';
+  cols.forEach(([k,l])=>{const a=sortCol===k?(sortDir>0?' ▲':' ▼'):'';h+=`<th onclick="doSort('${k}')">${l}${a}</th>`;});
+  h+='</tr></thead><tbody>';
+  rows.slice(0,500).forEach(r=>{
+    const gc=r.gap_q85>0?'gap-pos':'gap-neg';
+    const bg=r.gap_q85>10?'<span class="badge badge-d">קריטי</span>':r.gap_q85>5?'<span class="badge badge-w">בעייתי</span>':r.gap_q85<=0?'<span class="badge badge-ok">תקין</span>':'';
+    const pr = r.priority>0?`<span class="badge badge-p">${r.priority.toLocaleString()}</span>`:'';
+    h+=`<tr><td><b>${r.line}</b></td><td>${r.dir}</td><td>${r.hour}:00</td><td>${r.branch}</td><td>${r.planned?.toFixed(1)??'-'}</td><td>${r.q85?.toFixed(1)??'-'}</td><td class="${gc}">${r.gap_q85?.toFixed(1)??'-'} ${bg}</td><td>${r.pax_per_ride||'-'}</td><td>${paxBar(r.daily_pax)}</td><td>${pr}</td><td>${r.n_trips??'-'}</td><td>${r.pct_over?.toFixed(0)??'-'}%</td></tr>`;
+  });
+  if(rows.length>500)h+=`<tr><td colspan="12" style="text-align:center;padding:12px;color:#888;">מציג 500 מתוך ${rows.length}</td></tr>`;
+  h+='</tbody></table>';
+  document.getElementById('tblWrap').innerHTML=h;
+}
+
+function renderPriorityTable() {
+  const s=document.getElementById('fLine').value.trim();
+  const b=document.getElementById('fBranch').value;
+  let rows = PRIORITY_LINES.filter(r => {
+    if(s && !String(r.line).includes(s)) return false;
+    if(b!=='all' && r.branch!==b) return false;
+    return true;
+  }).sort((a,b2)=>sortDir*((a[sortCol]??0)-(b2[sortCol]??0)));
+
+  document.getElementById('tblCount').textContent=rows.length+' קווים';
+  const cols=[['line','קו'],['dir','כיוון'],['branch','סניף'],['avg_gap','פער ממוצע'],['max_gap','פער מקס׳'],['bad_hours','שעות>5דק'],['pax_per_ride','נוסע/נסיעה'],['daily_pax','נוסע/יום'],['priority','עדיפות'],['impact_per_ride','השפעה/נסיעה'],['profiles','פרופילים']];
+  let h='<table><thead><tr>';
+  cols.forEach(([k,l])=>{const a=sortCol===k?(sortDir>0?' ▲':' ▼'):'';h+=`<th onclick="doSort('${k}')">${l}${a}</th>`;});
+  h+='</tr></thead><tbody>';
+  rows.forEach(r=>{
+    const gc=r.avg_gap>0?'gap-pos':'gap-neg';
+    const pr = r.priority>0?`<span class="badge badge-p">${r.priority.toLocaleString()}</span>`:'';
+    const imp = r.impact_per_ride>200?'<span class="badge badge-d">'+r.impact_per_ride.toFixed(0)+'</span>':r.impact_per_ride>100?'<span class="badge badge-w">'+r.impact_per_ride.toFixed(0)+'</span>':r.impact_per_ride.toFixed(0);
+    h+=`<tr><td><b>${r.line}</b></td><td>${r.dir}</td><td>${r.branch}</td><td class="${gc}">${r.avg_gap.toFixed(1)}</td><td class="${r.max_gap>10?'gap-pos':''}">${r.max_gap.toFixed(1)}</td><td>${r.bad_hours}</td><td>${r.pax_per_ride||'-'}</td><td>${paxBar(r.daily_pax)}</td><td>${pr}</td><td>${imp}</td><td>${r.profiles}</td></tr>`;
+  });
+  h+='</tbody></table>';
+  document.getElementById('tblWrap').innerHTML=h;
+}
+
+function renderSTD() {
+  const s=document.getElementById('fLine').value.trim();
+  let rows=STD_TOP500.filter(r=>!s||String(r.line).includes(s)).sort((a,b)=>sortDir*((a[sortCol]??0)-(b[sortCol]??0)));
+  document.getElementById('tblCount').textContent=rows.length+' שורות';
+  const cols=[['line','קו'],['desc','תיאור'],['month','חודש'],['hour','שעה'],['n_stops','תחנות'],['std_increase','עליית STD'],['max_jump','קפיצה מקס׳'],['slope','שיפוע'],['travel_min','זמן נסיעה']];
+  let h='<table><thead><tr>';
+  cols.forEach(([k,l])=>{const a=sortCol===k?(sortDir>0?' ▲':' ▼'):'';h+=`<th onclick="doSort('${k}')">${l}${a}</th>`;});
+  h+='</tr></thead><tbody>';
+  rows.slice(0,500).forEach(r=>{
+    h+=`<tr><td><b>${r.line}</b></td><td style="font-size:0.73rem">${r.desc||r.route_desc_code||'-'}</td><td>${r.month}</td><td>${r.hour}:00</td><td>${r.n_stops}</td><td class="gap-pos">${r.std_increase?.toFixed(1)}</td><td>${r.max_jump?.toFixed(1)}</td><td>${r.slope?.toFixed(2)}</td><td>${r.travel_min?.toFixed(0)??'-'}</td></tr>`;
+  });
+  h+='</tbody></table>';
+  document.getElementById('tblWrap').innerHTML=h;
+}
+
+function doSort(col) { if(sortCol===col)sortDir*=-1;else{sortCol=col;sortDir=-1;} renderTable(); }
+</script>
+</body>
+</html>
