@@ -25,6 +25,7 @@ import sys
 import urllib.request
 import urllib.parse
 from collections import defaultdict
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 from pathlib import Path
 import glob as glob_mod
@@ -45,6 +46,8 @@ OUTPUT_DIR.mkdir(exist_ok=True)
 # === CONFIG ===
 TIKUFIM_RESOURCE_ID = "e72b10f3-4458-42c1-ba34-9b232feb8bc7"
 BITZUA_RESOURCE_ID = "084b8e33-e359-47aa-95f7-26782e52c9af"
+STD_RESOURCE_MONTHLY = "ad60edd5-33f8-47e9-9407-f70be4a7dcdd"  # ממוצע חודשי (מהיר)
+STD_RESOURCE_DAILY = "e3673768-3dc2-4e62-b0ea-cf763c07a037"    # ברמת יום ושעה (מדויק יותר)
 RIDERSHIP_FILE = DEFINITIONS_DIR / "ridership_clean.csv"
 
 
@@ -476,8 +479,7 @@ def build_aggregates(profiles):
         'pct_over_q85': round(over_q85 / n * 100, 1) if n > 0 else 0,
         'pct_over_5': round(over_5 / n * 100, 1) if n > 0 else 0,
         'avg_gap': round(avg_gap, 1),
-        'total_daily_pax': round(total_daily_pax),
-        'total_std': 40676  # from STD analysis
+        'total_daily_pax': round(total_daily_pax)
     }
 
     return {
@@ -489,28 +491,313 @@ def build_aggregates(profiles):
 
 
 # ==============================================================================
-# STEP 5: Load STD data (cached from previous analysis)
+# STEP 5: Load or refresh STD data (זמני הגעה לתחנות)
 # ==============================================================================
-def load_std_data():
-    """Load STD Top 500 from cache."""
+def load_metro_route_ids():
+    """Load Metropoline route_ids mapping from GTFS extract."""
+    mapping_file = DATA_DIR / "metro_route_ids.json"
+    if not mapping_file.exists():
+        log("  WARNING: מיפוי route_ids לא נמצא — יש להריץ תחילה extract_gtfs_routes.py")
+        return {}, {}
+
+    with open(mapping_file, 'r', encoding='utf-8') as f:
+        data = json.load(f)
+
+    routes = data.get('routes', {})
+    # Build line_number -> [route_ids]
+    line_to_rids = {}
+    rid_to_line = {}
+    for rid, info in routes.items():
+        line = info.get('route_short_name', '')
+        desc = info.get('route_long_name', '')
+        if line not in line_to_rids:
+            line_to_rids[line] = []
+        line_to_rids[line].append(int(rid))
+        rid_to_line[int(rid)] = {'line': line, 'desc': desc}
+
+    return line_to_rids, rid_to_line
+
+
+def _fetch_one_route_std(args):
+    """Fetch STD data for a single route_id (+ optional day) from API."""
+    if len(args) == 3:
+        rid, month, day = args
+        resource_id = STD_RESOURCE_DAILY
+        filters = {'route_id': rid, 'month': month, 'DayOfWeek': day}
+    else:
+        rid, month = args
+        day = None
+        resource_id = STD_RESOURCE_MONTHLY
+        filters = {'route_id': rid, 'month': month}
+
+    records = []
+    offset = 0
+    while True:
+        params = {
+            'resource_id': resource_id,
+            'filters': json.dumps(filters),
+            'limit': '1000',
+            'offset': str(offset)
+        }
+        url = 'https://data.gov.il/api/3/action/datastore_search?' + urllib.parse.urlencode(params)
+        try:
+            req = urllib.request.Request(url)
+            with urllib.request.urlopen(req, timeout=60) as resp:
+                data = json.loads(resp.read())
+                recs = data['result']['records']
+                records.extend(recs)
+                if len(recs) < 1000:
+                    break
+                offset += 1000
+        except Exception:
+            break
+    return rid, day, records
+
+
+def fetch_std_for_routes(route_ids, month, use_daily=False):
+    """Fetch STD (station arrival times) data from data.gov.il.
+
+    Two modes:
+    - use_daily=False (default): Uses monthly resource (fast, ~9 min for 800 routes)
+    - use_daily=True: Uses per-day resource, filtered to weekdays only (slow, ~45 min)
+
+    DayOfWeek in daily resource: 1=ראשון, 2=שני, ..., 5=חמישי, 6=שישי, 7=שבת
+    """
+    if use_daily:
+        days = [1, 2, 3, 4, 5]  # ראשון-חמישי
+        tasks = [(rid, month, day) for rid in route_ids for day in days]
+        mode_desc = f"ברמת יום (ראשון-חמישי), {len(tasks):,} בקשות"
+    else:
+        tasks = [(rid, month) for rid in route_ids]
+        mode_desc = f"ממוצע חודשי, {len(tasks):,} בקשות"
+
+    log(f"שולף נתוני STD עבור {len(route_ids)} קווים, חודש {month}")
+    log(f"  מצב: {mode_desc} (10 חוטים מקבילים)")
+
+    all_records = []
+    done = 0
+    errors = 0
+    report_interval = 500 if use_daily else 100
+
+    with ThreadPoolExecutor(max_workers=10) as executor:
+        futures = {executor.submit(_fetch_one_route_std, task): task for task in tasks}
+        for future in as_completed(futures):
+            rid, day, recs = future.result()
+            all_records.extend(recs)
+            done += 1
+            if not recs:
+                errors += 1
+            if done % report_interval == 0:
+                log(f"  התקדמות: {done}/{len(tasks)} ({len(all_records):,} רשומות)")
+
+    log(f"  נשלפו {len(all_records):,} רשומות STD ({errors} ריקות)")
+    return all_records
+
+
+def compute_std_analysis(records, rid_to_line):
+    """Compute STD analysis from raw per-stop data.
+
+    Input: raw API records with route_id, HourSourceTime, StopSequence_Rishui,
+           timeCumSum_mean, timeCumSum_std, distCumSum_mean, count_common, DayOfWeek
+    Output: list of route+hour profiles with STD metrics (same format as std_top500)
+
+    When data includes multiple days (DayOfWeek), we first average across days
+    per route+hour+stop, then compute STD metrics on the averaged values.
+    """
+    log("מחשב ניתוח STD...")
+
+    # First: average across days per route+hour+stop
+    stop_sums = defaultdict(lambda: {'mean_sum': 0, 'std_sum': 0, 'dist_sum': 0, 'count_sum': 0, 'n_days': 0})
+    for r in records:
+        key = (int(r['route_id']), int(r['HourSourceTime']), int(r['StopSequence_Rishui']))
+        s = stop_sums[key]
+        s['mean_sum'] += float(r.get('timeCumSum_mean', 0) or 0)
+        s['std_sum'] += float(r.get('timeCumSum_std', 0) or 0)
+        s['dist_sum'] += float(r.get('distCumSum_mean', 0) or 0)
+        s['count_sum'] += int(r.get('count_common', 0) or 0)
+        s['n_days'] += 1
+        s['stop_code'] = r.get('StopCode', 0)
+        s['month'] = r.get('month', 0)
+
+    # Build averaged records
+    averaged_records = []
+    for (route_id, hour, stop_seq), s in stop_sums.items():
+        n = s['n_days']
+        averaged_records.append({
+            'route_id': route_id,
+            'HourSourceTime': hour,
+            'StopSequence_Rishui': stop_seq,
+            'timeCumSum_mean': round(s['mean_sum'] / n, 2),
+            'timeCumSum_std': round(s['std_sum'] / n, 2),
+            'distCumSum_mean': round(s['dist_sum'] / n, 0),
+            'count_common': round(s['count_sum'] / n, 0),
+            'month': s['month']
+        })
+
+    log(f"  ממוצע ימים: {len(records):,} רשומות -> {len(averaged_records):,} רשומות ממוצעות")
+
+    # Group by route_id + hour
+    groups = defaultdict(list)
+    for r in averaged_records:
+        key = (int(r['route_id']), int(r['HourSourceTime']))
+        groups[key].append(r)
+
+    results = []
+    for (route_id, hour), stops in groups.items():
+        # Sort by stop sequence
+        stops.sort(key=lambda s: int(s['StopSequence_Rishui']))
+        n_stops = len(stops)
+        if n_stops < 3:
+            continue
+
+        # Extract STD values per stop
+        std_vals = []
+        mean_vals = []
+        dist_vals = []
+        samples = []
+        for s in stops:
+            std_vals.append(float(s.get('timeCumSum_std', 0) or 0))
+            mean_vals.append(float(s.get('timeCumSum_mean', 0) or 0))
+            dist_vals.append(float(s.get('distCumSum_mean', 0) or 0))
+            samples.append(int(s.get('count_common', 0) or 0))
+
+        std_start = std_vals[0]
+        std_end = std_vals[-1]
+        std_max = max(std_vals)
+        std_increase = std_end - std_start
+
+        # Find max jump between consecutive stops
+        max_jump = 0
+        max_jump_idx = 0
+        for i in range(1, len(std_vals)):
+            jump = std_vals[i] - std_vals[i-1]
+            if jump > max_jump:
+                max_jump = jump
+                max_jump_idx = i
+
+        # Find STD runs (consecutive increases)
+        runs = []
+        run_start = 0
+        for i in range(1, len(std_vals)):
+            if std_vals[i] < std_vals[i-1] - 0.5:  # decrease threshold
+                if i - run_start >= 3 and std_vals[i-1] - std_vals[run_start] > 5:
+                    runs.append([
+                        run_start, i-1,
+                        round(std_vals[run_start], 2), round(std_vals[i-1], 2),
+                        run_start + 1, i  # 1-indexed for display
+                    ])
+                run_start = i
+        # Check final run
+        if len(std_vals) - run_start >= 3 and std_vals[-1] - std_vals[run_start] > 5:
+            runs.append([
+                run_start, len(std_vals)-1,
+                round(std_vals[run_start], 2), round(std_vals[-1], 2),
+                run_start + 1, len(std_vals)
+            ])
+
+        # Compute slope (STD increase per stop)
+        slope = std_increase / max(n_stops - 1, 1)
+
+        # Distance and travel time
+        dist_km = round(dist_vals[-1] / 1000, 3) if dist_vals[-1] else 0
+        travel_min = round(mean_vals[-1], 2) if mean_vals[-1] else 0
+
+        avg_samples = round(sum(samples) / len(samples), 1) if samples else 0
+
+        # Get line info
+        line_info = rid_to_line.get(route_id, {})
+        line_name = line_info.get('line', str(route_id))
+        desc = line_info.get('desc', '')
+
+        results.append({
+            'month': int(stops[0].get('month', 0)),
+            'hour': hour,
+            'n_stops': n_stops,
+            'avg_samples': avg_samples,
+            'std_start': round(std_start, 2),
+            'std_end': round(std_end, 2),
+            'std_max': round(std_max, 2),
+            'std_increase': round(std_increase, 2),
+            'max_jump': round(max_jump, 2),
+            'max_jump_idx': max_jump_idx,
+            'jump_from_stop': max_jump_idx,
+            'jump_to_stop': max_jump_idx + 1,
+            'jump_from_std': round(std_vals[max_jump_idx - 1], 2) if max_jump_idx > 0 else 0,
+            'jump_to_std': round(std_vals[max_jump_idx], 2),
+            'slope': round(slope, 4),
+            'dist_km': dist_km,
+            'travel_min': travel_min,
+            'runs': runs,
+            'route_id': str(route_id),
+            'line': line_name,
+            'desc': desc,
+        })
+
+    # Sort by std_increase descending, take top 500
+    results.sort(key=lambda x: x['std_increase'], reverse=True)
+    top500 = results[:500]
+    log(f"  {len(results):,} פרופילי STD חושבו, Top 500 נבחרו")
+    return top500
+
+
+def refresh_std_data(month=None, use_daily=False):
+    """Full STD refresh: load route_ids, fetch from API, compute analysis.
+
+    use_daily: use per-day resource (slower but weekday-only) instead of monthly average
+    """
+    line_to_rids, rid_to_line = load_metro_route_ids()
+    if not rid_to_line:
+        log("  WARNING: לא ניתן לרענן STD — חסר מיפוי route_ids")
+        return load_std_data_from_cache()
+
+    # Get all unique route_ids
+    all_rids = sorted(rid_to_line.keys())
+    log(f"  {len(all_rids)} route_ids של מטרופולין")
+
+    if month is None:
+        month = 11  # default
+
+    # Fetch raw data
+    records = fetch_std_for_routes(all_rids, month, use_daily=use_daily)
+    if not records:
+        log("  WARNING: לא נמשכו רשומות STD — משתמש ב-cache")
+        return load_std_data_from_cache()
+
+    # Compute analysis
+    std_top500 = compute_std_analysis(records, rid_to_line)
+
+    # Cache results
+    std_file = DATA_DIR / "std_top500.json"
+    with open(std_file, 'w', encoding='utf-8') as f:
+        json.dump(std_top500, f, ensure_ascii=False)
+    log(f"  נתוני STD נשמרו ב-{std_file}")
+
+    return std_top500
+
+
+def load_std_data_from_cache():
+    """Load STD Top 500 from cache file."""
     std_file = DATA_DIR / "std_top500.json"
     if std_file.exists():
         with open(std_file, 'r', encoding='utf-8') as f:
-            return json.load(f)
-
-    # Try loading from compact_nov.json
-    compact_file = Path("/sessions/admiring-funny-ride/compact_nov.json")
-    if compact_file.exists():
-        with open(compact_file, 'r') as f:
-            compact = json.load(f)
-        std = compact.get('std_top500', [])
-        # Cache it
-        with open(std_file, 'w', encoding='utf-8') as f:
-            json.dump(std, f, ensure_ascii=False)
-        return std
+            data = json.load(f)
+        log(f"  טעון STD מ-cache: {len(data)} רשומות")
+        return data
 
     log("  WARNING: נתוני STD לא נמצאו")
     return []
+
+
+def load_std_data(refresh=False, month=None, use_daily=False):
+    """Load or refresh STD data.
+
+    refresh: if True, fetch fresh data from API
+    month: which month to fetch (None = latest)
+    use_daily: use per-day resource for weekday-only data (slower)
+    """
+    if refresh:
+        return refresh_std_data(month=month, use_daily=use_daily)
+    return load_std_data_from_cache()
 
 
 # ==============================================================================
@@ -592,7 +879,9 @@ def build_html(profiles, aggregates, std_data, definitions_source, data_date):
 def main():
     parser = argparse.ArgumentParser(description='מטרופולין — בניית דשבורד')
     parser.add_argument('--definitions', '-d', nargs='+', help='קובץ/קבצי הגדרות CSV מ-Optibus (אפשר כמה)')
-    parser.add_argument('--refresh-api', '-r', action='store_true', help='רענון נתונים מ-data.gov.il')
+    parser.add_argument('--refresh-api', '-r', action='store_true', help='רענון נתונים מ-data.gov.il (תיקופים + ביצוע + STD)')
+    parser.add_argument('--refresh-std-only', action='store_true', help='רענון נתוני STD בלבד')
+    parser.add_argument('--std-daily', action='store_true', help='STD ברמת יום (ימי חול בלבד, איטי יותר)')
     parser.add_argument('--no-holidays', action='store_true', help='בלי סינון חגים ושבתות')
     parser.add_argument('--output', '-o', help='נתיב קובץ פלט (ברירת מחדל: docs/index.html)')
     args = parser.parse_args()
@@ -602,6 +891,7 @@ def main():
     log("=" * 60)
 
     # Step 1: API data
+    latest_month = None
     if args.refresh_api:
         latest_month = refresh_api_data()
         data_date = f"חודש {latest_month}/2025"
@@ -673,8 +963,9 @@ def main():
     # Step 4: Aggregates
     aggregates = build_aggregates(profiles)
 
-    # Step 5: STD
-    std_data = load_std_data()
+    # Step 5: STD (זמני הגעה לתחנות)
+    refresh_std = args.refresh_api or args.refresh_std_only
+    std_data = load_std_data(refresh=refresh_std, month=latest_month, use_daily=args.std_daily)
 
     # Step 6: Build HTML
     output_file = build_html(profiles, aggregates, std_data, definitions_source, data_date)

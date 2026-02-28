@@ -10,6 +10,10 @@ on:
         description: 'קבצי הגדרות מתיקיית definitions/ (מופרדים בפסיק, ריק = רק רענון API)'
         required: false
         default: ''
+      std_daily:
+        description: 'STD ברמת יום בשבוע (ימי חול בלבד, איטי יותר)'
+        type: boolean
+        default: false
 
 jobs:
   refresh:
@@ -26,17 +30,22 @@ jobs:
 
       - name: Rebuild dashboard
         run: |
+          STD_FLAG=""
+          if [ "${{ github.event.inputs.std_daily }}" = "true" ]; then
+            STD_FLAG="--std-daily"
+          fi
+
           if [ -n "${{ github.event.inputs.definitions }}" ]; then
             IFS=',' read -ra FILES <<< "${{ github.event.inputs.definitions }}"
             ARGS=""
             for f in "${FILES[@]}"; do
               ARGS="$ARGS \"definitions/$(echo $f | xargs)\""
             done
-            eval python3 rebuild_dashboard.py --refresh-api --definitions $ARGS
+            eval python3 rebuild_dashboard.py --refresh-api --definitions $ARGS $STD_FLAG
           else
-            python3 rebuild_dashboard.py --refresh-api
+            python3 rebuild_dashboard.py --refresh-api $STD_FLAG
           fi
-        timeout-minutes: 10
+        timeout-minutes: 60
 
       - name: Check for changes
         id: check
