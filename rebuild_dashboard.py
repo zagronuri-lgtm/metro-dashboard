@@ -3,13 +3,18 @@
 מטרופולין — Pipeline לבניית דשבורד אוטומטית
 ==============================================
 שימוש:
-  python3 rebuild_dashboard.py                         # שימוש בנתונים קיימים
-  python3 rebuild_dashboard.py --definitions path.csv  # טעינת הגדרות חדשות
-  python3 rebuild_dashboard.py --refresh-api           # רענון נתוני data.gov.il
-  python3 rebuild_dashboard.py --refresh-api --definitions "דצמבר 2025.csv"
+  python3 rebuild_dashboard.py                                          # שימוש בנתונים קיימים
+  python3 rebuild_dashboard.py --definitions "נובמבר 2025.csv"          # חודש אחד
+  python3 rebuild_dashboard.py --definitions "אוק*.csv" "נוב*.csv"     # מספר חודשים
+  python3 rebuild_dashboard.py --refresh-api                            # רענון נתוני data.gov.il
+  python3 rebuild_dashboard.py --no-holidays                            # בלי סינון חגים
 
 תפוקה:
   docs/index.html — דשבורד מוכן ל-GitHub Pages
+
+סינון חגים:
+  כברירת מחדל, נסיעות בחגים יהודיים, מוסלמיים ובשבתות מסוננות מהניתוח.
+  כדי לבטל את הסינון: --no-holidays
 """
 
 import argparse
@@ -22,6 +27,10 @@ import urllib.parse
 from collections import defaultdict
 from datetime import datetime
 from pathlib import Path
+import glob as glob_mod
+
+# Holiday filtering
+from holidays import get_all_holidays
 
 # === PATHS ===
 SCRIPT_DIR = Path(__file__).parent
@@ -158,15 +167,50 @@ def parse_duration(s):
     return None
 
 
-def process_definitions(csv_path):
-    """Process Optibus definitions CSV into profiles."""
-    log(f"מעבד הגדרות: {csv_path}")
+def process_definitions(csv_paths, filter_holidays=True):
+    """Process one or more Optibus definitions CSVs into profiles.
 
-    with open(csv_path, 'r', encoding='utf-8-sig') as f:
-        reader = csv.DictReader(f)
-        rows = list(reader)
+    csv_paths: list of Path objects
+    filter_holidays: if True, removes rows on Jewish/Muslim holidays and Shabbat
+    """
+    all_rows = []
+    holiday_dates = get_all_holidays() if filter_holidays else set()
+    filtered_holiday = 0
+    filtered_shabbat = 0
 
-    log(f"  {len(rows):,} רשומות נסיעה")
+    for csv_path in csv_paths:
+        log(f"טוען הגדרות: {csv_path.name}")
+        with open(csv_path, 'r', encoding='utf-8-sig') as f:
+            reader = csv.DictReader(f)
+            file_rows = list(reader)
+        log(f"  {len(file_rows):,} רשומות נסיעה")
+
+        if filter_holidays:
+            before = len(file_rows)
+            clean_rows = []
+            for r in file_rows:
+                date_str = r.get('TripSourceDate', '')
+                weekday = r.get('יום בשבוע', '')
+
+                # סינון שבתות
+                if weekday == 'שבת':
+                    filtered_shabbat += 1
+                    continue
+
+                # סינון חגים
+                if date_str in holiday_dates:
+                    filtered_holiday += 1
+                    continue
+
+                clean_rows.append(r)
+
+            log(f"  סינון: {before - len(clean_rows):,} שורות הוסרו ({filtered_shabbat:,} שבתות, {filtered_holiday:,} חגים)")
+            file_rows = clean_rows
+
+        all_rows.extend(file_rows)
+
+    rows = all_rows
+    log(f"סה\"כ: {len(rows):,} רשומות נסיעה ({len(csv_paths)} קבצים)")
 
     # Detect column names (handle variations)
     sample = rows[0]
@@ -182,11 +226,18 @@ def process_definitions(csv_path):
     q90_col = next((c for c in cols if '90' in c), None)
     cluster_col = next((c for c in cols if 'Cluster' in c or 'cluster' in c), None)
 
-    if not all([line_col, dir_col, planned_col, q85_col]):
-        log(f"  ERROR: חסרות עמודות. נמצאו: {cols}")
+    # Q85 might be missing in older files — we'll compute from raw durations
+    compute_percentiles = q85_col is None
+
+    if not all([line_col, dir_col, planned_col]):
+        log(f"  ERROR: חסרות עמודות חובה. נמצאו: {cols}")
         sys.exit(1)
 
-    log(f"  עמודות: line={line_col}, dir={dir_col}, hour={hour_col}, planned={planned_col}, q85={q85_col}")
+    if compute_percentiles:
+        log(f"  עמודות: line={line_col}, dir={dir_col}, hour={hour_col}, planned={planned_col}")
+        log(f"  אחוזונים חסרים — יחושבו מנתוני משך נסיעה גולמיים")
+    else:
+        log(f"  עמודות: line={line_col}, dir={dir_col}, hour={hour_col}, planned={planned_col}, q85={q85_col}")
 
     # Cluster name mapping
     CLUSTER_MAP = {
@@ -209,13 +260,19 @@ def process_definitions(csv_path):
             hour = hour_raw
 
         planned = parse_duration(r.get(planned_col, ''))
-        q85 = parse_duration(r.get(q85_col, ''))
-        q90 = parse_duration(r.get(q90_col, '')) if q90_col else None
         actual = parse_duration(r.get(duration_col, '')) if duration_col else None
         cluster = r.get(cluster_col, '') if cluster_col else ''
 
-        if planned is None or q85 is None:
-            continue
+        if compute_percentiles:
+            q85 = None  # will compute later
+            q90 = None
+            if planned is None or actual is None:
+                continue
+        else:
+            q85 = parse_duration(r.get(q85_col, ''))
+            q90 = parse_duration(r.get(q90_col, '')) if q90_col else None
+            if planned is None or q85 is None:
+                continue
 
         try:
             key = (int(float(line)), int(float(direction)), int(float(hour)))
@@ -231,16 +288,39 @@ def process_definitions(csv_path):
         })
 
     # Aggregate to profiles
+    def percentile(values, pct):
+        """Compute percentile from a list of values."""
+        if not values:
+            return 0
+        s = sorted(values)
+        k = (len(s) - 1) * pct / 100
+        f = int(k)
+        c = f + 1 if f + 1 < len(s) else f
+        return s[f] + (k - f) * (s[c] - s[f])
+
     profiles = []
     for (line, direction, hour), trips in groups.items():
         n = len(trips)
         avg_planned = sum(t['planned'] for t in trips) / n
-        avg_q85 = sum(t['q85'] for t in trips) / n
-        avg_q90 = sum(t['q90'] for t in trips if t['q90'] is not None) / max(1, sum(1 for t in trips if t['q90'] is not None))
+
+        if compute_percentiles:
+            # Compute percentiles from raw duration data
+            durations = [t['actual'] for t in trips if t['actual'] is not None]
+            if not durations:
+                continue
+            avg_q85 = percentile(durations, 85)
+            avg_q90 = percentile(durations, 90)
+        else:
+            avg_q85 = sum(t['q85'] for t in trips) / n
+            avg_q90 = sum(t['q90'] for t in trips if t['q90'] is not None) / max(1, sum(1 for t in trips if t['q90'] is not None))
+
         avg_actual = sum(t['actual'] for t in trips if t['actual'] is not None) / max(1, sum(1 for t in trips if t['actual'] is not None))
 
         gap = avg_q85 - avg_planned
-        pct_over = sum(1 for t in trips if t['q85'] > t['planned']) / n * 100
+        if compute_percentiles:
+            pct_over = sum(1 for t in trips if t['actual'] is not None and t['actual'] > t['planned']) / n * 100
+        else:
+            pct_over = sum(1 for t in trips if t['q85'] is not None and t['q85'] > t['planned']) / n * 100
 
         cluster = trips[0]['cluster']
         branch = CLUSTER_MAP.get(cluster, cluster)
@@ -511,8 +591,9 @@ def build_html(profiles, aggregates, std_data, definitions_source, data_date):
 # ==============================================================================
 def main():
     parser = argparse.ArgumentParser(description='מטרופולין — בניית דשבורד')
-    parser.add_argument('--definitions', '-d', help='נתיב לקובץ הגדרות CSV מ-Optibus')
+    parser.add_argument('--definitions', '-d', nargs='+', help='קובץ/קבצי הגדרות CSV מ-Optibus (אפשר כמה)')
     parser.add_argument('--refresh-api', '-r', action='store_true', help='רענון נתונים מ-data.gov.il')
+    parser.add_argument('--no-holidays', action='store_true', help='בלי סינון חגים ושבתות')
     parser.add_argument('--output', '-o', help='נתיב קובץ פלט (ברירת מחדל: docs/index.html)')
     args = parser.parse_args()
 
@@ -528,15 +609,38 @@ def main():
         data_date = "נובמבר 2025"
 
     # Step 2: Definitions
+    filter_holidays = not args.no_holidays
+    if filter_holidays:
+        log("סינון חגים ושבתות: מופעל")
+    else:
+        log("סינון חגים ושבתות: כבוי (--no-holidays)")
+
     if args.definitions:
-        csv_path = Path(args.definitions)
-        if not csv_path.is_absolute():
-            csv_path = DEFINITIONS_DIR / csv_path
-        if not csv_path.exists():
-            log(f"ERROR: קובץ הגדרות לא נמצא: {csv_path}")
+        # Resolve paths — support glob patterns and multiple files
+        csv_paths = []
+        for pattern in args.definitions:
+            p = Path(pattern)
+            if not p.is_absolute():
+                p = DEFINITIONS_DIR / pattern
+            # Try glob expansion
+            matches = sorted(glob_mod.glob(str(p)))
+            if matches:
+                csv_paths.extend(Path(m) for m in matches)
+            elif p.exists():
+                csv_paths.append(p)
+            else:
+                log(f"WARNING: לא נמצא קובץ: {pattern}")
+
+        if not csv_paths:
+            log("ERROR: לא נמצאו קבצי הגדרות")
             sys.exit(1)
-        profiles = process_definitions(csv_path)
-        definitions_source = csv_path.name
+
+        log(f"נמצאו {len(csv_paths)} קבצי הגדרות:")
+        for cp in csv_paths:
+            log(f"  — {cp.name}")
+
+        profiles = process_definitions(csv_paths, filter_holidays=filter_holidays)
+        definitions_source = ', '.join(cp.name for cp in csv_paths)
 
         # Cache processed profiles
         cache_file = DATA_DIR / "profiles_latest.json"
@@ -549,14 +653,14 @@ def main():
         if cache_file.exists():
             with open(cache_file, 'r', encoding='utf-8') as f:
                 profiles = json.load(f)
-            definitions_source = "cached"
+            definitions_source = "מטמון"
             log(f"טעון פרופילים מ-cache: {len(profiles):,}")
         else:
             # Try to find latest CSV in definitions dir
             csvs = sorted(DEFINITIONS_DIR.glob("*.csv"), key=os.path.getmtime, reverse=True)
             if csvs:
                 log(f"נמצא CSV עדכני: {csvs[0].name}")
-                profiles = process_definitions(csvs[0])
+                profiles = process_definitions([csvs[0]], filter_holidays=filter_holidays)
                 definitions_source = csvs[0].name
             else:
                 log("ERROR: לא נמצאו קבצי הגדרות ולא cache")
