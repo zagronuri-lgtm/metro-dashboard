@@ -13,7 +13,7 @@
   docs/index.html — דשבורד מוכן ל-GitHub Pages
 
 סינון חגים:
-  כברירת מחדל, נסיעות בחגים יהודיים, מוסלמיים ובשבתות מסוננות מהניתוח.
+  כברירת מחדל, נסיעות בחגים יהודיים, מוסלמיים, בשישי ובשבתות מסוננות מהניתוח.
   כדי לבטל את הסינון: --no-holidays
 """
 
@@ -195,8 +195,8 @@ def process_definitions(csv_paths, filter_holidays=True):
                 date_str = r.get('TripSourceDate', '')
                 weekday = r.get('יום בשבוע', '')
 
-                # סינון שבתות
-                if weekday == 'שבת':
+                # סינון שישי ושבת
+                if weekday in ('שישי', 'שבת'):
                     filtered_shabbat += 1
                     continue
 
@@ -207,7 +207,7 @@ def process_definitions(csv_paths, filter_holidays=True):
 
                 clean_rows.append(r)
 
-            log(f"  סינון: {before - len(clean_rows):,} שורות הוסרו ({filtered_shabbat:,} שבתות, {filtered_holiday:,} חגים)")
+            log(f"  סינון: {before - len(clean_rows):,} שורות הוסרו ({filtered_shabbat:,} שישי+שבת, {filtered_holiday:,} חגים)")
             file_rows = clean_rows
 
         all_rows.extend(file_rows)
