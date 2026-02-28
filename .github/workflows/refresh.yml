@@ -1,0 +1,39 @@
+name: Refresh Dashboard Data
+
+on:
+  schedule:
+    # Every Sunday at 06:00 Israel time (03:00 UTC)
+    - cron: '0 3 * * 0'
+  workflow_dispatch:  # Allow manual trigger
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Refresh API data and rebuild dashboard
+        run: |
+          python3 rebuild_dashboard.py --refresh-api
+        timeout-minutes: 10
+
+      - name: Check for changes
+        id: check
+        run: |
+          git diff --quiet docs/index.html || echo "changed=true" >> $GITHUB_OUTPUT
+
+      - name: Commit and push updated dashboard
+        if: steps.check.outputs.changed == 'true'
+        run: |
+          git config user.name "GitHub Actions Bot"
+          git config user.email "actions@github.com"
+          git add docs/index.html data/
+          git commit -m "Auto-refresh: update dashboard with latest data.gov.il data $(date +%Y-%m-%d)"
+          git push
