@@ -356,16 +356,116 @@ def safe_float(v, default=0):
         return default
 
 
-def load_ridership():
-    """Load ridership_clean.csv."""
-    if not RIDERSHIP_FILE.exists():
-        log(f"  WARNING: {RIDERSHIP_FILE} לא נמצא")
-        return {}
+RIDERSHIP_RESOURCE_ID = "e6cfac2f-979a-44fd-b439-ecb116ec0b16"  # נפח נוסעים - מסלקה
 
+
+def fetch_ridership_from_api():
+    """Fetch ridership from data.gov.il ridership resource (e6cfac2f).
+
+    This resource has DailyPassengers, WeeklyPassengers, AVGCommutersPerRide(Weekly)
+    per line×direction×quarter — exactly what ridership_clean.csv had.
+    """
+    log("שולף נתוני נוסעים מ-data.gov.il API...")
+
+    # Fetch all Metropoline records
+    all_records = []
+    offset = 0
+    while True:
+        params = {
+            'resource_id': RIDERSHIP_RESOURCE_ID,
+            'filters': json.dumps({'AgencyName': 'מטרופולין'}),
+            'limit': '1000',
+            'offset': str(offset)
+        }
+        url = 'https://data.gov.il/api/3/action/datastore_search?' + urllib.parse.urlencode(params)
+        req = urllib.request.Request(url)
+        with urllib.request.urlopen(req, timeout=60) as resp:
+            data = json.loads(resp.read())
+            records = data['result']['records']
+            all_records.extend(records)
+            if len(records) < 1000:
+                break
+            offset += 1000
+
+    log(f"  נשלפו {len(all_records):,} רשומות נוסעים (מטרופולין)")
+
+    # Dedup: prefer latest quarter (Q4 > Q3 > Q2 > Q1), latest year
+    rid_by_q = defaultdict(lambda: defaultdict(lambda: {'daily': 0, 'weekly': 0, 'per_ride': 0}))
+    latest_year = 0
+    latest_q = 0
+
+    for r in all_records:
+        line = r.get('RouteName')
+        direction = r.get('RouteDirection')
+        if line is None or direction is None:
+            continue
+
+        key = f'{line}_{direction}'
+        year = int(r.get('year', 0))
+        q = int(r.get('Q', 0))
+        sort_key = year * 10 + q  # e.g. 2024*10+4 = 20244
+
+        if sort_key > latest_year * 10 + latest_q:
+            latest_year = year
+            latest_q = q
+
+        rid_by_q[key][sort_key]['daily'] += safe_float(r.get('DailyPassengers'))
+        rid_by_q[key][sort_key]['weekly'] += safe_float(r.get('WeeklyPassengers'))
+        rid_by_q[key][sort_key]['per_ride'] = max(
+            rid_by_q[key][sort_key]['per_ride'],
+            safe_float(r.get('AVGCommutersPerRide(Weekly)'))
+        )
+
+    # Take best (latest) quarter per line×direction
+    lookup = {}
+    for key, quarters in rid_by_q.items():
+        best_q = max(quarters.keys())
+        lookup[key] = quarters[best_q]
+
+    period = f"Q{latest_q}/{latest_year}"
+    log(f"  נוסעים: {len(lookup)} צירופי קו×כיוון (עד {period})")
+
+    # Cache
+    cache = {
+        'period': period, 'year': latest_year, 'quarter': latest_q,
+        'fetched': datetime.now().isoformat(),
+        'count': len(all_records),
+        'data': {k: v for k, v in lookup.items()}
+    }
+    cache_file = DATA_DIR / "ridership_api.json"
+    with open(cache_file, 'w', encoding='utf-8') as f:
+        json.dump(cache, f, ensure_ascii=False)
+    log(f"  נשמר ב-{cache_file}")
+
+    return lookup, period
+
+
+def load_ridership(use_api=False):
+    """Load ridership data. API preferred, CSV as fallback."""
+
+    # Try API cache first
+    if use_api:
+        return fetch_ridership_from_api()
+
+    # Try cached API data
+    cache_file = DATA_DIR / "ridership_api.json"
+    if cache_file.exists():
+        with open(cache_file, 'r', encoding='utf-8') as f:
+            cache = json.load(f)
+        lookup = cache.get('data', {})
+        period = f"{cache.get('month')}/{cache.get('year')}"
+        log(f"  טעון ridership מ-API cache: {len(lookup)} צירופי קו×כיוון ({period})")
+        return lookup, period
+
+    # Fallback: CSV file
+    if not RIDERSHIP_FILE.exists():
+        log(f"  WARNING: אין נתוני נוסעים (לא API ולא CSV)")
+        return {}, None
+
+    log("  fallback ל-ridership_clean.csv...")
     with open(RIDERSHIP_FILE, 'r', encoding='utf-8-sig') as f:
         rows = list(csv.DictReader(f))
 
-    # Dedup by line+dir, prefer latest quarter
     rid_by_q = defaultdict(lambda: defaultdict(lambda: {'daily': 0, 'weekly': 0, 'per_ride': 0}))
     for r in rows:
         key = f'{r["RouteName"]}_{r["RouteDirection"]}'
@@ -379,8 +479,8 @@ def load_ridership():
         best_q = max(quarters.keys())
         lookup[key] = quarters[best_q]
 
-    log(f"  טעון ridership: {len(lookup)} צירופי קו×כיוון")
-    return lookup
+    log(f"  טעון ridership מ-CSV: {len(lookup)} צירופי קו×כיוון")
+    return lookup, "CSV"
 
 
 def enrich_profiles(profiles, ridership):
@@ -1042,8 +1142,8 @@ def main():
                 log("ERROR: לא נמצאו קבצי הגדרות ולא cache")
                 sys.exit(1)
 
-    # Step 3: Ridership
-    ridership = load_ridership()
+    # Step 3: Ridership (API preferred, CSV fallback)
+    ridership, ridership_source = load_ridership(use_api=args.refresh_api)
     profiles = enrich_profiles(profiles, ridership)
 
     # Step 4: Aggregates
