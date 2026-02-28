@@ -453,7 +453,7 @@ def load_ridership(use_api=False):
         with open(cache_file, 'r', encoding='utf-8') as f:
             cache = json.load(f)
         lookup = cache.get('data', {})
-        period = f"{cache.get('month')}/{cache.get('year')}"
+        period = cache.get('period', f"Q{cache.get('quarter','?')}/{cache.get('year','?')}")
         log(f"  טעון ridership מ-API cache: {len(lookup)} צירופי קו×כיוון ({period})")
         return lookup, period
 

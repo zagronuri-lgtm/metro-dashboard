@@ -86,7 +86,7 @@ footer { text-align:center; padding:14px; color:#999; font-size:0.73rem; }
 <header>
   <div>
     <h1>מטרופולין — ניתוח דיוק הגדרות מול ביצוע + נפח נוסעים</h1>
-    <div class="subtitle">שילוב: STD (2024) + הגדרות Optibus (מטמון) + נפח נוסעים לנסיעה (ridership_clean) | עדכון: 28/02/2026 20:59</div>
+    <div class="subtitle">שילוב: STD (2024) + הגדרות Optibus (מטמון) + נפח נוסעים לנסיעה (ridership_clean) | עדכון: 28/02/2026 21:14</div>
   </div>
   <div class="filters">
     <select id="fBranch"><option value="all">כל הסניפים</option></select>
@@ -153,12 +153,12 @@ footer { text-align:center; padding:14px; color:#999; font-size:0.73rem; }
           סניפים: שרון-חולון מרחבי, בקעת אונו-אלעד, שרון עירוני, הנגב
         </div>
         <div style="margin-bottom:12px;">
-          <strong style="color:#8e44ad;">3. נפח נוסעים — ridership_clean</strong><br>
-          מקור: קובץ ridership_clean.csv — נתוני תיקופי רב-קו מעובדים<br>
-          היקף: 1,889 רשומות, 501 צירופי קו × כיוון, 3 רבעונים (Q1/Q2/Q4)<br>
+          <strong style="color:#8e44ad;">3. נפח נוסעים — מסלקה (data.gov.il)</strong><br>
+          מקור: <a href="https://data.gov.il" target="_blank">data.gov.il</a> — <code>resource_id=e6cfac2f-979a-44fd-b439-ecb116ec0b16</code><br>
+          היקף: ~1,889 רשומות מטרופולין, ~501 צירופי קו × כיוון<br>
           שדות מרכזיים: נוסעים יומיים, נוסעים שבועיים, <strong>ממוצע נוסעים לנסיעה</strong><br>
-          הצלבה: נלקח הרבעון העדכני ביותר (Q4 כשזמין). 99.3% התאמה<br>
-          הערה: חלק מהקווים מופיעים בכמה אשכולות — במקרים אלה נסכמו הנוסעים
+          הצלבה: נלקח הרבעון העדכני ביותר (Q4 כשזמין). ~99% התאמה<br>
+          עדכון: אוטומטי — נשלף מ-API בכל רענון שבועי
         </div>
         <div>
           <strong style="color:#2980b9;">4. תיקוף — תיקופי מסלקה (data.gov.il)</strong><br>
@@ -212,7 +212,7 @@ footer { text-align:center; padding:14px; color:#999; font-size:0.73rem; }
   </div>
 </section>
 
-<footer>מטרופולין — ניתוח הגדרות + נפח נוסעים | STD: data.gov.il (2024) | הגדרות: Optibus (מטמון) | נוסעים: ridership_clean | נבנה: 28/02/2026 20:59</footer>
+<footer>מטרופולין — ניתוח הגדרות + נפח נוסעים | STD: data.gov.il (2024) | הגדרות: Optibus (מטמון) | נוסעים: ridership_clean | נבנה: 28/02/2026 21:14</footer>
 
 </div>
 <script>
@@ -280,7 +280,8 @@ function renderKPIs() {
     <div class="kpi ${p5>25?'warn':'good'}"><div class="val">${p5.toFixed(1)}%</div><div class="lbl">פער > 5 דק׳</div></div>
     <div class="kpi ${avgGap>3?'warn':'good'}"><div class="val">${avgGap.toFixed(1)}</div><div class="lbl">פער ממוצע (דק׳)</div></div>
     <div class="kpi accent"><div class="val">${Math.round(totalPax).toLocaleString()}</div><div class="lbl">נוסעים/יום (קווים מסוננים)</div></div>
-    <div class="kpi"><div class="val">${Number(KPIS.total_std||0).toLocaleString()}</div><div class="lbl">פרופילי STD (2024)</div></div>`;
+    <div class="kpi"><div class="val">${Number(KPIS.total_std||0).toLocaleString()}</div><div class="lbl">פרופילי STD</div></div>
+    <div class="kpi warn"><div class="val">${typeof BOTTLENECKS!=='undefined'?BOTTLENECKS.filter(b=>b.severity>=100).length:0}</div><div class="lbl">צווארי בקבוק קריטיים</div></div>`;
 }
 
 function renderCharts() { renderBranch(); renderDist(); renderHour(); renderPriority(); }
