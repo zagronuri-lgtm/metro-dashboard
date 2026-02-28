@@ -37,7 +37,7 @@ from holidays import get_all_holidays
 SCRIPT_DIR = Path(__file__).parent
 DATA_DIR = SCRIPT_DIR / "data"
 OUTPUT_DIR = SCRIPT_DIR / "docs"
-DEFINITIONS_DIR = SCRIPT_DIR.parent / "route-definitions"
+DEFINITIONS_DIR = SCRIPT_DIR.parent / "הגדרות קווים  אחוזונים" / "ביצוע נסיעות"
 
 # Ensure dirs exist
 DATA_DIR.mkdir(exist_ok=True)
