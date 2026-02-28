@@ -4,7 +4,12 @@ on:
   schedule:
     # Every Sunday at 06:00 Israel time (03:00 UTC)
     - cron: '0 3 * * 0'
-  workflow_dispatch:  # Allow manual trigger
+  workflow_dispatch:
+    inputs:
+      definitions:
+        description: 'קבצי הגדרות מתיקיית definitions/ (מופרדים בפסיק, ריק = רק רענון API)'
+        required: false
+        default: ''
 
 jobs:
   refresh:
@@ -19,9 +24,18 @@ jobs:
         with:
           python-version: '3.11'
 
-      - name: Refresh API data and rebuild dashboard
+      - name: Rebuild dashboard
         run: |
-          python3 rebuild_dashboard.py --refresh-api
+          if [ -n "${{ github.event.inputs.definitions }}" ]; then
+            IFS=',' read -ra FILES <<< "${{ github.event.inputs.definitions }}"
+            ARGS=""
+            for f in "${FILES[@]}"; do
+              ARGS="$ARGS \"definitions/$(echo $f | xargs)\""
+            done
+            eval python3 rebuild_dashboard.py --refresh-api --definitions $ARGS
+          else
+            python3 rebuild_dashboard.py --refresh-api
+          fi
         timeout-minutes: 10
 
       - name: Check for changes
@@ -34,6 +48,6 @@ jobs:
         run: |
           git config user.name "GitHub Actions Bot"
           git config user.email "actions@github.com"
-          git add docs/index.html data/
+          git add docs/index.html data/ definitions/
           git commit -m "Auto-refresh: update dashboard with latest data.gov.il data $(date +%Y-%m-%d)"
           git push
