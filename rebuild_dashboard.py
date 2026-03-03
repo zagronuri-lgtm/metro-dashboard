@@ -987,7 +987,7 @@ def extract_bottlenecks(std_data, profiles=None):
 # ==============================================================================
 # STEP 6: Build HTML dashboard
 # ==============================================================================
-def build_html(profiles, aggregates, std_data, bottlenecks, definitions_source, data_date):
+def build_html(profiles, aggregates, std_data, bottlenecks, definitions_source, data_date, data_sources=None):
     """Build the complete HTML dashboard."""
     log("בונה דשבורד HTML...")
 
@@ -1025,6 +1025,13 @@ def build_html(profiles, aggregates, std_data, bottlenecks, definitions_source, 
         template = template.replace('{{BUILD_DATE}}', now)
         template = template.replace('{{DATA_DATE}}', data_date)
         template = template.replace('{{DEFINITIONS_SOURCE}}', definitions_source)
+
+        # Data sources status
+        if data_sources:
+            sources_json = json.dumps(data_sources, ensure_ascii=False)
+            template = template.replace('/*DATA_SOURCES*/', f'const DATA_SOURCES = {sources_json};')
+        else:
+            template = template.replace('/*DATA_SOURCES*/', 'const DATA_SOURCES = {};')
 
         html_parts.append(template)
     else:
@@ -1156,8 +1163,39 @@ def main():
     # Step 5b: Bottlenecks (צווארי בקבוק)
     bottlenecks = extract_bottlenecks(std_data, profiles)
 
-    # Step 6: Build HTML
-    output_file = build_html(profiles, aggregates, std_data, bottlenecks, definitions_source, data_date)
+    # Step 6: Collect data source timestamps
+    import os as _os
+    data_sources = {}
+    for fname, label in [
+        ('tikufim_latest.json', 'תיקופים'),
+        ('execution_stats.json', 'ביצוע'),
+        ('ridership_api.json', 'נוסעים'),
+        ('std_top500.json', 'STD'),
+        ('profiles_latest.json', 'הגדרות'),
+    ]:
+        fpath = DATA_DIR / fname
+        if fpath.exists():
+            try:
+                with open(fpath, 'r', encoding='utf-8') as f:
+                    cache = json.load(f)
+                fetched = ''
+                if isinstance(cache, dict):
+                    fetched = cache.get('fetched', cache.get('timestamp', ''))
+                if fetched:
+                    dt = datetime.fromisoformat(fetched.replace('Z', '+00:00'))
+                    data_sources[label] = dt.strftime('%d/%m/%Y %H:%M')
+                else:
+                    # Fallback to file modification time
+                    mtime = _os.path.getmtime(fpath)
+                    data_sources[label] = datetime.fromtimestamp(mtime).strftime('%d/%m/%Y %H:%M')
+            except Exception:
+                mtime = _os.path.getmtime(fpath)
+                data_sources[label] = datetime.fromtimestamp(mtime).strftime('%d/%m/%Y %H:%M')
+        else:
+            data_sources[label] = 'חסר'
+
+    # Step 7: Build HTML
+    output_file = build_html(profiles, aggregates, std_data, bottlenecks, definitions_source, data_date, data_sources)
 
     if args.output:
         import shutil
